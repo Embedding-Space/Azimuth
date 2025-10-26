@@ -24,6 +24,7 @@ Self-perplexity comes **free** during generation by capturing probabilities that
 2. Map manifold boundaries in activation space
 3. Test hypotheses about steering vector extraction methods (semantic vs empirical)
 4. Understand when and how models "get lost" during intervention
+5. **Explore geometric structure of semantic space** under the causal metric tensor (Park et al. 2024)
 
 ## Project Structure
 
@@ -33,12 +34,17 @@ Azimuth/
 │   ├── __init__.py       # Package initialization
 │   └── config.py         # Configuration constants
 ├── notebooks/            # Jupyter notebooks (experiments)
-│   ├── 01_datasets.ipynb           # Dataset collection and quality analysis
-│   └── 02_vector_extraction.ipynb  # Steering vector extraction
+│   ├── 01_datasets.ipynb                # Dataset collection and quality analysis
+│   ├── 02_vector_extraction.ipynb       # Steering vector extraction
+│   ├── 03_causal_metric_tensor.ipynb    # Extract causal metric tensor M
+│   ├── 04.1_metric_properties.ipynb     # Effective dimensionality, non-Euclidean distance, token cloud extent
+│   ├── 04.2_forman_ricci_curvature.ipynb # Discrete curvature estimation
+│   ├── 04.3_community_detection.ipynb   # Semantic clustering via Louvain
+│   └── 04.4_umap_visualization.ipynb    # 2D/3D visualizations of semantic space
 ├── data/                 # Datasets and extracted vectors
 │   ├── onestop_*.{csv,json}  # OneStopEnglish dataset
 │   ├── wikipedia_*.{csv,json} # Wikipedia dataset
-│   └── vectors/              # Extracted steering vectors (.pt files)
+│   └── vectors/              # Extracted steering vectors and metric tensors (.pt files)
 └── pyproject.toml        # Dependencies and config (uv managed)
 ```
 
@@ -80,11 +86,14 @@ Azimuth/
 - `accelerate` — Model loading and device management
 - `jupyter` — Notebook environment
 - `matplotlib` — Basic plotting
+- `networkx` — Graph construction and analysis
 - `numpy` — Numerical operations
 - `pandas` — Data handling
 - `plotly` — Interactive 3D visualizations (way better than matplotlib for some things)
+- `python-louvain` — Community detection algorithm
 - `textstat` — Flesch-Kincaid and readability metrics
 - `transformers` — HuggingFace models and tokenizers
+- `umap-learn` — Dimensionality reduction preserving metric structure
 
 ### Key Package Modules
 
@@ -100,6 +109,27 @@ Azimuth/
 - `azimuth/analysis.py` — Text metrics and regression analysis
 - `azimuth/vectors.py` — Vector loading and manipulation
 - `azimuth/visualization.py` — Plotting helpers
+
+## Causal Metric Tensor (Current Focus)
+
+**Reference:** Park et al. (2024) - "Linearity of Relation Decoding in Transformer Language Models"
+
+The causal metric tensor M = Cov(γ)^-1 defines a natural geometry on semantic space based on the model's probability distribution:
+
+**Key insight:** Token representations live in a curved, non-Euclidean space when measured by the causal metric. Standard L2 distances don't capture semantic relationships - the causal metric does.
+
+**Geometric properties discovered:**
+- Space is ~52% effective dimensionality (anisotropic, not all directions equal)
+- 375,000% deviation from Euclidean geometry (strongly non-Euclidean)
+- Positive curvature (κ ≈ 26.7) - sphere-like clustering, not flat or hyperbolic
+- Finite diameter under causal metric with measurable typical separations
+- Surprising community structure (4 equal clusters instead of hierarchical)
+
+**Applications:**
+1. Better layer selection for steering (causal norm vs L2 norm)
+2. Understanding manifold boundaries (where do we fall off?)
+3. Measuring steering vector quality (magnitude under causal vs Euclidean metric)
+4. Geometric interpretation of model capabilities
 
 ## Research Hypotheses
 
@@ -219,6 +249,79 @@ Extracts steering vectors using contrastive activation averaging.
   - `best_layer`: Layer with maximum magnitude
   - `metadata`: Model name, dataset info, extraction date
 
+### `03_causal_metric_tensor.ipynb`
+Extracts the causal metric tensor M = Cov(γ)^-1 from the model's unembedding matrix (Park et al. 2024).
+
+**Method:**
+- Loads model and extracts unembedding matrix γ (vocab_size × hidden_dim)
+- Computes covariance: Cov(γ) = (1/V) Σ (γᵢ - μ)(γᵢ - μ)ᵀ
+- Applies Tikhonov regularization: Cov(γ) + λI (λ=1e-6 for numerical stability)
+- Inverts to get metric tensor: M = (Cov(γ) + λI)^-1
+- Verifies properties: symmetry, positive definiteness, condition number
+
+**Output:**
+- `data/vectors/causal_metric_tensor_qwen3_4b.pt` containing:
+  - `M`: Metric tensor [hidden_dim, hidden_dim] (float32)
+  - `cov_gamma`: Covariance matrix
+  - `eigenvalues_cov`: For condition number analysis
+  - `metadata`: Model name, regularization parameter, extraction date
+
+**Key insight:** The causal metric defines distances in semantic space that account for the model's actual probability distributions, not just Euclidean geometry.
+
+### `04.1_metric_properties.ipynb`
+Analyzes basic geometric properties of the causal metric tensor.
+
+**Analyses:**
+1. **Effective dimensionality** via participation ratio: PR = (Σλᵢ)² / Σ(λᵢ²)
+2. **Distance from Euclidean** via Frobenius norm: ||M - I||_F
+3. **Token cloud extent** via sampling and greedy diameter search
+
+**Key findings:**
+- Semantic space is ~52% effective dimensionality (~1333 active dimensions)
+- Strongly non-Euclidean (375,000% deviation from identity)
+- Token cloud has finite diameter under causal metric
+
+### `04.2_forman_ricci_curvature.ipynb`
+Estimates discrete Ricci curvature of semantic space using Forman's combinatorial method.
+
+**Method:**
+- Samples tokens, builds k-NN graph using causal distances
+- Computes Forman-Ricci curvature: κ_F(i,j) = deg(i) + deg(j) - 2 - 2·(common neighbors)
+- Tests convergence across sample sizes [500, 1000, 2000, 4000, 8000]
+
+**Key finding:**
+- Positive curvature (κ ≈ 26.7) indicates sphere-like, locally clustered geometry
+- Space is not flat or hyperbolic
+
+### `04.3_community_detection.ipynb`
+Identifies semantic clusters using Louvain community detection on k-NN graph.
+
+**Method:**
+- Builds k-NN graph (k=20) from causal distances
+- Applies Louvain algorithm to find communities
+- Analyzes modularity and size distribution
+
+**Key finding:**
+- Surprisingly symmetric structure (4 roughly equal communities)
+- Not the hierarchical or power-law distribution initially expected
+
+### `04.4_umap_visualization.ipynb`
+Creates 2D and 3D visualizations of semantic space under causal metric.
+
+**Method:**
+- Samples tokens, computes pairwise causal distances
+- Uses UMAP with `metric='precomputed'` to preserve causal geometry
+- Validates structure with Hopkins statistic and community detection
+- Creates interactive Plotly visualizations
+
+**Features:**
+- 2D and 3D embeddings
+- Token ID and community-colored visualizations
+- Hopkins statistic for clustering validation
+- Interactive rotation/zoom in 3D plots
+
+**Key insight:** Visualizations reveal the non-Euclidean structure - clusters and voids that wouldn't be visible in Euclidean projections.
+
 ## Common Development Commands
 
 **Running notebooks:**
@@ -244,10 +347,19 @@ steering_vec = vectors['vectors'][best_layer]  # [hidden_dim]
 - This project builds on insights from the llmsonar work (steering vectors as local paths through sparse manifolds, not global feature axes)
 - We're specifically investigating the "catastrophic boundary" phenomenon (sharp discontinuities when leaving trained regions)
 - Perplexity is the key new metric — it tells us when we've left the manifold
+- **NEW DIRECTION**: Exploring causal metric tensor from Park et al. 2024 to understand the geometric structure of semantic space
 - When making notebooks: keep the experimental narrative, let the story unfold, don't rush to completion
 - When adding to the package: if you write it twice in notebooks, it belongs in `azimuth/`
 - **Notebooks are parameterized at the top** — set dataset path, model name, batch size, etc. in config cells for reusability
 - The extraction method (output_hidden_states vs. forward hooks) affects magnitude distribution but produces semantically equivalent vectors (cosine similarity >0.99)
+
+### Tool Gotchas
+
+**NotebookEdit with insert mode:**
+- When using `NotebookEdit` with `edit_mode='insert'` and `cell_id='cell-X'`, the new cell is inserted AFTER cell-X
+- If you insert multiple cells in sequence all using the same `cell_id`, they'll be inserted in REVERSE order (4321 instead of 1234)
+- **Solution**: Either insert cells in reverse order, OR track the new cell IDs and use them for subsequent insertions, OR just rewrite the whole notebook with Write tool
+- This bit us when adding the token cloud extent section to 04.1 - ended up with cells completely backwards!
 
 ## Final Note from Jeffery
 
