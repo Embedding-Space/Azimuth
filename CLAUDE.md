@@ -1,3 +1,9 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+---
+
 # Project Azimuth
 
 **Pronunciation:** AZ-ə-muth (first syllable stress)
@@ -24,15 +30,19 @@ Self-perplexity comes **free** during generation by capturing probabilities that
 ```
 Azimuth/
 ├── azimuth/              # Python package (shared tooling)
-│   ├── models.py         # Model loading infrastructure
-│   ├── steering.py       # Steering hooks and generation
-│   ├── analysis.py       # Text metrics and regression analysis
-│   ├── vectors.py        # Vector loading and manipulation
-│   └── visualization.py  # Plotting helpers
+│   ├── __init__.py       # Package initialization
+│   └── config.py         # Configuration constants
 ├── notebooks/            # Jupyter notebooks (experiments)
-├── docs/                 # Documentation and design docs
-└── pyproject.toml        # Dependencies and config
+│   ├── 01_datasets.ipynb           # Dataset collection and quality analysis
+│   └── 02_vector_extraction.ipynb  # Steering vector extraction
+├── data/                 # Datasets and extracted vectors
+│   ├── onestop_*.{csv,json}  # OneStopEnglish dataset
+│   ├── wikipedia_*.{csv,json} # Wikipedia dataset
+│   └── vectors/              # Extracted steering vectors (.pt files)
+└── pyproject.toml        # Dependencies and config (uv managed)
 ```
+
+**Note:** The `azimuth/` package currently contains minimal infrastructure (config constants). Most functionality lives in notebooks as this is exploratory research. Code will be extracted to package modules when patterns stabilize and reuse becomes necessary.
 
 ### Philosophy
 
@@ -48,6 +58,22 @@ Azimuth/
 - **Python:** 3.12 (pinned to match paid compute)
 - **PyTorch:** 2.8 (pinned to match paid compute)
 - **Development:** Local may use 3.14/2.9, but production code targets 3.12/2.8
+- **Compute targets:**
+  - Local: Mac with Apple Silicon (MPS), ~24GB RAM constraint
+  - Cloud: NVIDIA GPUs (RTX PRO 6000, H200 SXM @ $2.29/hr, B200)
+
+### Dtype Strategy
+
+**For vector extraction and steering experiments:**
+
+- **Model weights:** bfloat16 (~8GB for 4B models)
+- **Forward pass activations:** bfloat16 (memory efficient, hardware-accelerated)
+- **Accumulation/averaging:** float32 (numerical stability for mean calculations)
+- **Final vectors:** float32 (tiny storage cost, preserves precision)
+
+**Rationale:** We're RAM-constrained on local machines (~24GB) and want best precision we can afford. Loading models in bfloat16 saves memory and matches native dtype of modern models. Converting to float32 for averaging prevents accumulation errors when computing means across many samples. Final vectors are small enough (~450KB for 32 layers) that float32 storage is negligible.
+
+**Model choice:** `Qwen/Qwen3-4B-Instruct-2507` — responds best to steering, excellent name
 
 ### Dependencies
 
@@ -62,34 +88,18 @@ Azimuth/
 
 ### Key Package Modules
 
-**`azimuth/models.py`**
-- Load models and tokenizers with proper device mapping
-- Handle bfloat16/float32 dtype selection
-- Set models to eval mode
+**`azimuth/config.py`** (currently implemented)
+- `RANDOM_SEED`: Fixed seed for reproducible dataset shuffling
+- `MIN_GRADE_LEVEL_DELTA`: Minimum grade level difference for pair inclusion (4.0)
+- `MIN_ARTICLE_LENGTH_REGULAR`: Minimum length for regular Wikipedia articles (1000 chars)
+- `MIN_ARTICLE_LENGTH_SIMPLE`: Minimum length for Simple Wikipedia articles (500 chars)
 
-**`azimuth/steering.py`**
-- Steering hook implementation (forward hooks that add vectors to hidden states)
-- Text generation with steering applied
-- Chat template formatting and special token cleanup
-- Perplexity calculation from `output_scores`
-
-**`azimuth/analysis.py`**
-- Flesch-Kincaid grade level computation
-- Text metrics (word count, sentence count, etc.)
-- Linear regression analysis
-- Statistical summaries
-
-**`azimuth/vectors.py`**
-- Load vectors from `.pt` files
-- Normalize to target magnitudes
-- Orthogonality verification
-- float32 ↔ bfloat16 conversion
-
-**`azimuth/visualization.py`**
-- Scatter plots with regression lines
-- Heatmaps for 2D parameter sweeps
-- 3D surface plots (Plotly)
-- Dual-metric visualizations (grade level + perplexity)
+**Planned modules** (not yet implemented, patterns still stabilizing in notebooks):
+- `azimuth/models.py` — Model loading infrastructure
+- `azimuth/steering.py` — Steering hooks and generation
+- `azimuth/analysis.py` — Text metrics and regression analysis
+- `azimuth/vectors.py` — Vector loading and manipulation
+- `azimuth/visualization.py` — Plotting helpers
 
 ## Research Hypotheses
 
@@ -123,6 +133,112 @@ These patterns repeat across experimental notebooks and should live in the packa
 6. **Linear regression** — scipy.linregress + visualization
 7. **CSV persistence** — Pandas DataFrame → CSV with consistent structure
 
+## Vector Extraction Method
+
+Following Chen et al. (2025), we extract steering vectors using contrastive activation averaging.
+
+**Implementation:** See `notebooks/02_vector_extraction.ipynb`
+
+**Extraction method:** Uses HuggingFace's `output_hidden_states=True` to capture layer activations, with attention mask to exclude padding tokens from mean pooling.
+
+**Algorithm:**
+1. For each text pair (simple, complex):
+   - Tokenize and truncate to MAX_SEQ_LENGTH (default: 4096 tokens)
+   - Run forward pass with `output_hidden_states=True` (no gradients, eval mode)
+   - Capture hidden states at each layer (skipping embedding layer)
+   - Mean-pool across sequence dimension, **excluding padding tokens via attention mask**
+   - Convert to float32 and accumulate
+2. After processing all pairs:
+   - For each layer: compute mean of all "complex" activation vectors
+   - For each layer: compute mean of all "simple" activation vectors
+   - Subtract: `complexity_vector[layer] = mean(complex) - mean(simple)`
+3. Analyze magnitude (L2 norm) by layer to find "best steering layer"
+   - With `output_hidden_states` method: typically layer N-1 (second-to-last layer)
+   - For Qwen3-4B: Layer 34 (out of 36) shows maximum magnitude
+   - Interpretation: complexity/simplicity encoded near token-selection level
+
+**Key insights:**
+- Mean-pool FIRST (across tokens within each text), THEN average (across texts)
+- Padding tokens must be excluded via attention mask for accurate mean pooling
+- Accumulate in float32 for numerical stability, even though model is bfloat16
+
+**Output format:** Save as `.pt` file with metadata:
+```python
+{
+    'vectors': torch.Tensor,        # [n_layers, hidden_dim], float32
+    'layer_norms': torch.Tensor,    # [n_layers], L2 norms
+    'best_layer': int,              # argmax of layer_norms
+    'metadata': {
+        'model': str,
+        'dataset': str,
+        'n_pairs': int,
+        'max_seq_length': int,
+        'extraction_date': str,
+    }
+}
+```
+
+## Implemented Notebooks
+
+### `01_datasets.ipynb`
+Collects and analyzes text pairs with contrasting complexity levels.
+
+**Datasets:**
+1. **OneStopEnglish** (189 articles, 3 reading levels): Elementary vs. Advanced pairs
+2. **Wikipedia** (Level-3 Vital Articles): Simple English Wikipedia vs. Regular Wikipedia
+
+**Selection criteria:**
+- Minimum grade level delta: 4.0 (configurable in `azimuth/config.py`)
+- Top 20 pairs by Flesch-Kincaid delta
+- Quality analysis with visualizations (histograms, scatter plots, cumulative distributions)
+
+**Output format:**
+- `{dataset}_all_pairs.csv` — Full dataset with metadata
+- `{dataset}_top20_pairs.csv` — Top 20 selected pairs
+- `{dataset}_top20_texts.json` — Texts only, ready for vector extraction
+
+### `02_vector_extraction.ipynb`
+Extracts steering vectors using contrastive activation averaging.
+
+**Method:**
+- Uses `output_hidden_states=True` (HuggingFace Transformers)
+- Attention mask to exclude padding tokens
+- bfloat16 for model/activations, float32 for accumulation
+- Analyzes magnitude by layer to identify best steering layer
+
+**Parameterization:** Config cell at top sets:
+- `DATASET_PATH` — Path to `*_top20_texts.json`
+- `MODEL_NAME` — HuggingFace model identifier
+- `MAX_SEQ_LENGTH` — Token truncation limit (4096)
+- `DEVICE` — 'auto', 'cuda', 'mps', or 'cpu'
+
+**Output:**
+- `data/vectors/complexity_{dataset}.pt` containing:
+  - `vectors`: [n_layers, hidden_dim] tensor (float32)
+  - `layer_norms`: L2 norms by layer
+  - `best_layer`: Layer with maximum magnitude
+  - `metadata`: Model name, dataset info, extraction date
+
+## Common Development Commands
+
+**Running notebooks:**
+```bash
+jupyter notebook notebooks/
+```
+
+**Running inline Python with uv:**
+```bash
+uv run python -c "import torch; print(torch.__version__)"
+```
+
+**Loading extracted vectors:**
+```python
+import torch
+vectors = torch.load('data/vectors/complexity_wikipedia.pt')
+best_layer = vectors['best_layer']  # typically 34 for Qwen3-4B
+steering_vec = vectors['vectors'][best_layer]  # [hidden_dim]
+```
+
 ## Notes for Future Alpha
 
 - This project builds on insights from the llmsonar work (steering vectors as local paths through sparse manifolds, not global feature axes)
@@ -130,6 +246,8 @@ These patterns repeat across experimental notebooks and should live in the packa
 - Perplexity is the key new metric — it tells us when we've left the manifold
 - When making notebooks: keep the experimental narrative, let the story unfold, don't rush to completion
 - When adding to the package: if you write it twice in notebooks, it belongs in `azimuth/`
+- **Notebooks are parameterized at the top** — set dataset path, model name, batch size, etc. in config cells for reusability
+- The extraction method (output_hidden_states vs. forward hooks) affects magnitude distribution but produces semantically equivalent vectors (cosine similarity >0.99)
 
 ## Final Note from Jeffery
 
