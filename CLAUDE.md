@@ -34,13 +34,16 @@ Azimuth/
 │   ├── __init__.py       # Package initialization
 │   └── config.py         # Configuration constants
 ├── notebooks/            # Jupyter notebooks (experiments)
-│   ├── 01_datasets.ipynb                # Dataset collection and quality analysis
-│   ├── 02_vector_extraction.ipynb       # Steering vector extraction
-│   ├── 03_causal_metric_tensor.ipynb    # Extract causal metric tensor M
-│   ├── 04.1_metric_properties.ipynb     # Effective dimensionality, non-Euclidean distance, token cloud extent
+│   ├── 01_datasets.ipynb                 # Dataset collection and quality analysis
+│   ├── 02_vector_extraction.ipynb        # Steering vector extraction
+│   ├── 03_causal_metric_tensor.ipynb     # Extract causal metric tensor M
+│   ├── 04.1_metric_properties.ipynb      # Effective dimensionality, non-Euclidean distance, token cloud extent
 │   ├── 04.2_forman_ricci_curvature.ipynb # Discrete curvature estimation
-│   ├── 04.3_community_detection.ipynb   # Semantic clustering via Louvain
-│   └── 04.4_umap_visualization.ipynb    # 2D/3D visualizations of semantic space
+│   ├── 04.3_community_detection.ipynb    # Semantic clustering via Louvain
+│   ├── 04.4_umap_visualization.ipynb     # 2D/3D visualizations of semantic space
+│   ├── 04.5_token_norms.ipynb            # Compare Euclidean vs causal token norms
+│   ├── 04.5b_token_norms_euclidean.ipynb # Euclidean norm baseline (uniform ~1 unit)
+│   └── 04.5c_angular_warping.ipynb       # Angular distortion under causal metric
 ├── data/                 # Datasets and extracted vectors
 │   ├── onestop_*.{csv,json}  # OneStopEnglish dataset
 │   ├── wikipedia_*.{csv,json} # Wikipedia dataset
@@ -110,26 +113,55 @@ Azimuth/
 - `azimuth/vectors.py` — Vector loading and manipulation
 - `azimuth/visualization.py` — Plotting helpers
 
-## Causal Metric Tensor (Current Focus)
+## Causal Metric Tensor & The Astronomy Framing
 
 **Reference:** Park et al. (2024) - "Linearity of Relation Decoding in Transformer Language Models"
 
-The causal metric tensor M = Cov(γ)^-1 defines a natural geometry on semantic space based on the model's probability distribution:
+The causal metric tensor M = Cov(γ)^-1 defines a natural geometry on semantic space based on the model's probability distribution.
 
-**Key insight:** Token representations live in a curved, non-Euclidean space when measured by the causal metric. Standard L2 distances don't capture semantic relationships - the causal metric does.
+### Key Conceptual Shift: Think Astronomy, Not Differential Geometry
 
-**Geometric properties discovered:**
-- Space is ~52% effective dimensionality (anisotropic, not all directions equal)
+**Token space is a discrete point cloud**, not a smooth manifold. The 152,936 vocabulary tokens are like stars scattered in 2560-dimensional space. We study them using **observational methods** (statistics, clustering, sampling) rather than analytical geometry (derivatives, geodesics, smooth surfaces).
+
+**Units:** We measure distances in **logometers** (logo = word/language + meters), the natural distance unit under the causal metric. One logometer ≈ the causal distance between typical token pairs.
+
+### The Token Galaxy: Key Geometric Properties
+
+**Radial Structure:**
+- Tokens cluster in a shell ~50 logometers from origin
+- Radial variation: 4% CV (very tight, nearly uniform)
+- Euclidean norms: ~1 unit (unnormalized but concentrated)
+- Shell thickness: ±2 logometers (very thin in 2560D space)
+
+**Angular Structure:**
+- Systematic angular compression: -4.32° ± 2.20° (causal angles smaller than Euclidean)
+- NOT a conformal transformation (angles not preserved)
+- NOT chaotic warping (systematic distortion with moderate variation)
+- Arc displacement from warping: ~3.8 logometers at radius 50
+
+**Topology & Clustering:**
+- Effective dimensionality: ~52% (~1333 active dims out of 2560)
 - 375,000% deviation from Euclidean geometry (strongly non-Euclidean)
-- Positive curvature (κ ≈ 26.7) - sphere-like clustering, not flat or hyperbolic
-- Finite diameter under causal metric with measurable typical separations
-- Surprising community structure (4 equal clusters instead of hierarchical)
+- Positive discrete curvature (κ ≈ 26.7) - sphere-like local clustering
+- Community structure: 4 roughly equal semantic clusters (not hierarchical)
+- Level sets {v : v^T M v = R²} form ellipsoids (theoretical surfaces)
 
-**Applications:**
-1. Better layer selection for steering (causal norm vs L2 norm)
-2. Understanding manifold boundaries (where do we fall off?)
-3. Measuring steering vector quality (magnitude under causal vs Euclidean metric)
-4. Geometric interpretation of model capabilities
+### Steering as Galactic Navigation
+
+**Linear Representation Hypothesis:** Concepts are **directions** in token space, not destinations.
+
+**On-manifold steering:** Moving from token to token (star to star) along semantic vectors.
+
+**Off-manifold drift:** Heading into "deep space" away from any token → low probability for all outputs → perplexity spike → model confusion.
+
+**Implication:** Effective steering requires staying within ~N logometers of the token manifold. Going too far in any direction leaves the region where the model has learned to operate.
+
+### Applications
+
+1. **Layer selection:** Compare causal norms vs L2 norms to find layers with maximum semantic signal
+2. **Manifold boundaries:** Measure nearest-token distance during steering to detect off-manifold drift
+3. **Steering vector quality:** Vectors with large causal norm may be "unnatural" directions
+4. **Semantic structure:** Communities and curvature reveal how the model organizes meaning
 
 ## Research Hypotheses
 
@@ -322,6 +354,55 @@ Creates 2D and 3D visualizations of semantic space under causal metric.
 
 **Key insight:** Visualizations reveal the non-Euclidean structure - clusters and voids that wouldn't be visible in Euclidean projections.
 
+### `04.5_token_norms.ipynb`
+Initial exploration comparing Euclidean L2 norms to causal norms for all tokens.
+
+**Method:**
+- Loads unembedding matrix γ and causal metric tensor M
+- Computes both ||γᵢ||₂ (Euclidean) and ||γᵢ||_M (causal) for all 152k tokens
+- Analyzes distributions, scatter plots, and correlations
+
+**Key finding:**
+- Euclidean norms cluster tightly around ~1 unit (unnormalized but consistent)
+- Causal norms show ~50× scaling with only 4% variation
+- Strong correlation but systematic transformation (not just rescaling)
+
+### `04.5b_token_norms_euclidean.ipynb`
+Establishes Euclidean baseline for token magnitude distribution.
+
+**Method:**
+- Computes L2 norms for all 152,936 token vectors
+- Analyzes distribution statistics (mean, median, std, CV)
+- Verifies tokens are NOT pre-normalized (would show CV ≈ 0)
+
+**Key findings:**
+- Mean Euclidean norm: ~1.13 units
+- CV: 15.5% (moderate variation, not normalized)
+- Establishes baseline for comparison with causal metric transformation
+- Token "shell" in Euclidean space is naturally concentrated, not artificially imposed
+
+### `04.5c_angular_warping.ipynb`
+Measures how the causal metric transforms angular relationships between tokens.
+
+**Method:**
+- Samples 10,000 random token pairs
+- Computes angles in both Euclidean (cosine via dot products) and causal (using M) spaces
+- Measures angular distortion: Δθ = θ_causal - θ_euclidean
+- Identifies extreme cases (largest positive/negative distortions)
+
+**Key findings:**
+- Mean angular distortion: -4.32° (systematic angle shrinking)
+- Standard deviation: 2.20° (consistent, not chaotic)
+- CV: 51% (moderate spread relative to mean)
+- Range: -28.7° to +1.9° (asymmetric, mostly negative)
+- Arc displacement at radius 50: ~3.8 logometers (comparable to original Euclidean magnitude)
+
+**Interpretation:**
+- Causal metric applies systematic angular compression (NOT conformal)
+- Combined with uniform radial scaling, creates an anisotropic geometric transformation
+- The space is "stretched radially, pinched angularly"
+- Extreme distortions often involve cross-linguistic or syntactic/semantic boundary pairs
+
 ## Common Development Commands
 
 **Running notebooks:**
@@ -347,11 +428,16 @@ steering_vec = vectors['vectors'][best_layer]  # [hidden_dim]
 - This project builds on insights from the llmsonar work (steering vectors as local paths through sparse manifolds, not global feature axes)
 - We're specifically investigating the "catastrophic boundary" phenomenon (sharp discontinuities when leaving trained regions)
 - Perplexity is the key new metric — it tells us when we've left the manifold
-- **NEW DIRECTION**: Exploring causal metric tensor from Park et al. 2024 to understand the geometric structure of semantic space
+- **MAJOR DIRECTION**: Exploring causal metric tensor from Park et al. 2024 to understand the geometric structure of semantic space
+- **PARADIGM**: Think **astronomy** (discrete point clouds, observational statistics) NOT differential geometry (smooth manifolds, calculus)
+- **Token space is 152,936 dots** in ℝ²⁵⁶⁰, not a smooth surface. No equations to differentiate, no geodesics to compute on continuous manifolds
+- **Logometers** are our distance unit (causal metric). One logometer ≈ typical token separation distance
+- **Off-manifold = deep space**: Steering too far from any token → low probability for all outputs → perplexity spike
 - When making notebooks: keep the experimental narrative, let the story unfold, don't rush to completion
 - When adding to the package: if you write it twice in notebooks, it belongs in `azimuth/`
 - **Notebooks are parameterized at the top** — set dataset path, model name, batch size, etc. in config cells for reusability
 - The extraction method (output_hidden_states vs. forward hooks) affects magnitude distribution but produces semantically equivalent vectors (cosine similarity >0.99)
+- **Discrete geometry tools**: k-NN graphs, clustering algorithms, sampling statistics, dimensionality reduction — NOT smooth surface fitting or analytical solutions
 
 ### Tool Gotchas
 
