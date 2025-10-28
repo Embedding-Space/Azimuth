@@ -211,3 +211,6 @@ docs/lin_rep.pdf
 
 # Data files
 data/
+
+# macOS system files
+.DS_Store
