@@ -439,13 +439,9 @@ steering_vec = vectors['vectors'][best_layer]  # [hidden_dim]
 - The extraction method (output_hidden_states vs. forward hooks) affects magnitude distribution but produces semantically equivalent vectors (cosine similarity >0.99)
 - **Discrete geometry tools**: k-NN graphs, clustering algorithms, sampling statistics, dimensionality reduction — NOT smooth surface fitting or analytical solutions
 
-### Tool Gotchas
+### Jupyter Notebook Guidelines
 
-**NotebookEdit with insert mode:**
-- When using `NotebookEdit` with `edit_mode='insert'` and `cell_id='cell-X'`, the new cell is inserted AFTER cell-X
-- If you insert multiple cells in sequence all using the same `cell_id`, they'll be inserted in REVERSE order (4321 instead of 1234)
-- **Solution**: Either insert cells in reverse order, OR track the new cell IDs and use them for subsequent insertions, OR just rewrite the whole notebook with Write tool
-- This bit us when adding the token cloud extent section to 04.1 - ended up with cells completely backwards!
+@JUPYTER.md
 
 ## Final Note from Jeffery
 
