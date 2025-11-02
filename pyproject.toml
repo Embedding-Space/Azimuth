@@ -20,4 +20,5 @@ dependencies = [
     "networkx>=3.5",
     "umap-learn>=0.5.9.post2",
     "seaborn>=0.13.2",
+    "ripser>=0.6.12",
 ]
